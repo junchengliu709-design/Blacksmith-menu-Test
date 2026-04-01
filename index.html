@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Blacksmith - Rhythm + Management</title>
+  <style>
+    body{ margin:0; font-family: Arial, system-ui; background:#0b0f16; color:#eee; }
+    .wrap{ display:flex; gap:16px; padding:16px; flex-wrap:wrap; justify-content:center; align-items:flex-start; }
+    .card{ background:#111827; border:1px solid #243244; border-radius:14px; padding:14px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+    canvas{ width:min(92vw, 520px); height:auto; border-radius:10px; background:#000; border:1px solid #2a3a52; image-rendering: pixelated; }
+    button{
+      border:1px solid #2b3b55; background:#1f2937; color:#fff;
+      border-radius:12px; padding:10px 14px; font-weight:700; cursor:pointer;
+    }
+    button:active{ transform: translateY(1px); }
+    .hint{ font-size:13px; opacity:.85; line-height:1.45; margin-top:10px; }
+    .kbd{ padding:2px 7px; border-radius:8px; background:#0b1220; border:1px solid #243244; font-weight:700; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div style="font-weight:700;margin-bottom:10px;">Blacksmith (320×240) — Rhythm + Management</div>
+    <canvas id="cv" width="320" height="240"></canvas>
+    <div class="hint">
+      Keys:
+      <span class="kbd">A</span>/<span class="kbd">Space</span> = Strike / Start,
+      <span class="kbd">Q</span> = Quench,
+      <span class="kbd">B</span> = Back,
+      <span class="kbd">1/2/3</span> = Recipe,
+      <span class="kbd">Z/X/C</span> = Upgrades
+    </div>
+  </div>
+
+  <div class="card" style="min-width:240px; max-width:340px;">
+    <div style="font-weight:700;margin-bottom:10px;">Buttons</div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <button id="btnA">A / Strike</button>
+      <button id="btnQ">Q / Quench</button>
+      <button id="btnB">B / Back</button>
+      <button id="btnR">Reset</button>
+    </div>
+
+    <div class="hint">
+      Tip: Pick a weapon in the workshop (1/2/3), then press A to forge.<br>
+      Strike inside the bright Timing zone and keep Heat inside the recipe range.<br>
+      Quench cools fast, but quenching too hot can crack the blade.
+    </div>
+  </div>
+</div>
+
+<script>
+  const c = document.getElementById("cv");
+  const g = c.getContext("2d");
+
+  const COL = {
+    black:"#000", white:"#fff",
+    navy:"#000050", blue:"#0050c8", cyan:"#00c8c8",
+    dgrey:"#3c3c3c", lgrey:"#aaaaaa",
+    red:"#e02020", green:"#1bbf55", yellow:"#ffd400",
+    silver:"#cfd3d9"
+  };
+
+  // Pages: 0 menu, 1 loading, 2 workshop, 3 game, 4 results
+  let page = 0;
+  let loadingEnd = 0;
+
+  // Economy / upgrades
+  let coins = 0;
+  let upHammer = 0;
+  let upFurnace = 0;
+  let upQuench = 0;
+
+  // Recipes
+  const recipes = [
+    { id:0, key:"1", name:"KNIFE", targetLow:35, targetHigh:65, baseGain:10, heatRise:10, timingSpeed:0.020, coinBase:18 },
+    { id:1, key:"2", name:"SWORD", targetLow:50, targetHigh:80, baseGain:8,  heatRise:12, timingSpeed:0.024, coinBase:26 },
+    { id:2, key:"3", name:"AXE",   targetLow:60, targetHigh:92, baseGain:7,  heatRise:14, timingSpeed:0.028, coinBase:30 },
+  ];
+  let recipe = recipes[0];
+
+  // Run stats
+  let heat = 45;
+  let prog = 0;
+  let timingX = 0;
+  let timingDir = 1;
+
+  let combo = 0;
+  let maxCombo = 0;
+  let score = 0;
+
+  let cracks = 0;
+  let perfect = 0, good = 0, bad = 0;
+
+  let lastHitText = "";
+  let forged = false;
+  let failed = false;
+
+  // ---- beginner-ish drawing helpers ----
+  function cls(){ g.fillStyle = COL.black; g.fillRect(0,0,320,240); }
+  function rect(x,y,w,h,col){ g.fillStyle = col; g.fillRect(x,y,w,h); }
+  function lineH(y,col){ rect(0,y,320,1,col); }
+  function text(x,y,str,size,col){ g.fillStyle = col; g.font = size + "px Arial"; g.fillText(str,x,y); }
+
+  function bar(x,y,w,h,val,fillCol){
+    g.strokeStyle = COL.white;
+    g.strokeRect(x+0.5,y+0.5,w,h);
+    rect(x+1,y+1,w-2,h-2,COL.black);
+    if(val < 0) val = 0;
+    if(val > 100) val = 100;
+    const fw = Math.floor((w-2) * val / 100);
+    rect(x+1,y+1,fw,h-2,fillCol);
+  }
+
+  function drawHeader(title){
+    rect(0,0,320,34,COL.navy);
+    lineH(34,COL.black);
+    text(10,24,title,18,COL.white);
+  }
+
+  function drawMenu(){
+    cls();
+    drawHeader("MINI GAME");
+
+    rect(16,58,288,110,COL.blue);
+    g.strokeStyle = COL.cyan; g.lineWidth = 2;
+    g.strokeRect(16.5,58.5,287,109);
+    g.lineWidth = 1;
+
+    rect(28,72,6,82,COL.cyan);
+
+    text(46,98,"BLACKSMITH",26,COL.white);
+    text(48,132,"A: Start (Workshop)",14,COL.white);
+
+    rect(240,108,42,10,COL.cyan);
+    rect(248,98,26,12,COL.cyan);
+    rect(236,100,18,8,COL.cyan);
+    rect(254,88,18,10,COL.cyan);
+
+    lineH(216,COL.dgrey);
+    text(10,232,"A: Start",12,COL.lgrey);
+  }
+
+  function drawLoading(){
+    cls();
+    text(70,125,"Loading...",28,COL.white);
+  }
+
+  function drawWorkshop(){
+    cls();
+    drawHeader("WORKSHOP");
+
+    text(14,56,"Choose Recipe (1/2/3):",12,COL.white);
+
+    let y0 = 72;
+    for(let i=0;i<3;i++){
+      let r = recipes[i];
+      let isSel = (r.id === recipe.id);
+
+      rect(16, y0 + i*36, 288, 30, isSel ? "#123a66" : "#0b1220");
+      g.strokeStyle = isSel ? COL.cyan : "#243244";
+      g.strokeRect(16.5, y0 + i*36 + 0.5, 287, 29);
+
+      text(24, y0 + i*36 + 20, r.key + ") " + r.name, 14, COL.white);
+      text(140, y0 + i*36 + 20, "Heat " + r.targetLow + "-" + r.targetHigh, 12, COL.lgrey);
+    }
+
+    lineH(176,COL.dgrey);
+    text(10,186,"A: Start forging   B: Back",12,COL.lgrey);
+
+    text(14,190,"Coins: " + coins,14,COL.yellow);
+    text(14,208,"Upgrades (Z/X/C):",12,COL.white);
+
+    let costH = 20 + upHammer*15;
+    let costF = 20 + upFurnace*15;
+    let costQ = 20 + upQuench*15;
+
+    text(14,224,"Z Hammer Lv"+upHammer+" ($"+costH+")",12,COL.lgrey);
+    text(170,224,"X Furnace Lv"+upFurnace+" ($"+costF+")",12,COL.lgrey);
+    text(14,238,"C Quench  Lv"+upQuench+" ($"+costQ+")",12,COL.lgrey);
+  }
+
+  function drawTimingBar(){
+    text(20,78,"TIMING",12,COL.white);
+    g.strokeStyle = COL.white;
+    g.strokeRect(60.5,68.5,240,14);
+
+    rect(60 + 110, 69, 40, 12, "#203a4a"); // sweet zone
+
+    const px = 60 + Math.floor(240 * timingX);
+    rect(px, 69, 3, 12, COL.yellow); // pointer
+  }
+
+  function drawGame(){
+    cls();
+    drawHeader("BLACKSMITH");
+
+    text(20,55,"HEAT",12,COL.white);
+    bar(60,44,100,12,heat,COL.red);
+
+    text(180,55,"PROG",12,COL.white);
+    bar(220,44,80,12,prog,COL.green);
+
+    text(20,98,"Target Heat: " + recipe.targetLow + "-" + recipe.targetHigh,12,COL.lgrey);
+
+    text(20,116,"Combo: " + combo + "  Max: " + maxCombo,12,COL.white);
+    text(180,116,"Score: " + score,12,COL.white);
+    text(20,132,"Cracks: " + cracks + "/3",12,COL.white);
+
+    if(lastHitText){
+      let col = (lastHitText==="PERFECT") ? COL.yellow :
+                (lastHitText==="GOOD") ? COL.white :
+                (lastHitText==="BAD") ? "#ff8080" : COL.lgrey;
+      text(230,132,lastHitText,12,col);
+    }
+
+    drawTimingBar();
+
+    rect(40,140,240,70,COL.dgrey); // anvil area
+
+    rect(110,168,140,8,COL.silver); // blade
+    g.fillStyle = COL.silver;
+    g.beginPath();
+    g.moveTo(250,168); g.lineTo(268,172); g.lineTo(250,176);
+    g.closePath(); g.fill();
+
+    rect(55,92,12,40,"#8b5a2b"); // hammer handle
+    rect(45,82,32,14,COL.lgrey); // hammer head
+
+    lineH(216,COL.dgrey);
+    text(10,232,"A: Strike   Q: Quench   B: Back",12,COL.lgrey);
+
+    if(forged) text(110,205,"FORGED!",18,COL.yellow);
+    if(failed) text(95,205,"BROKEN!",18,"#ff6060");
+  }
+
+  function drawResults(grade, coinEarned){
+    cls();
+    drawHeader("RESULTS");
+
+    text(20,62,"Recipe: " + recipe.name,14,COL.white);
+    text(20,82,"Score: " + score,14,COL.white);
+    text(20,102,"Perfect/Good/Bad: " + perfect + "/" + good + "/" + bad,14,COL.white);
+    text(20,122,"Max Combo: " + maxCombo,14,COL.white);
+    text(20,142,"Cracks: " + cracks,14,COL.white);
+
+    text(20,172,"Grade: " + grade,22,COL.yellow);
+    text(20,198,"Coins Earned: +" + coinEarned,14,COL.green);
+
+    lineH(216,COL.dgrey);
+    text(10,232,"A: Workshop   B: Menu",12,COL.lgrey);
+  }
+
+  // ---- upgrades ----
+  function buyHammer(){
+    let cost = 20 + upHammer*15;
+    if(coins >= cost){ coins -= cost; upHammer++; }
+  }
+  function buyFurnace(){
+    let cost = 20 + upFurnace*15;
+    if(coins >= cost){ coins -= cost; upFurnace++; }
+  }
+  function buyQuench(){
+    let cost = 20 + upQuench*15;
+    if(coins >= cost){ coins -= cost; upQuench++; }
+  }
+
+  // ---- run reset / navigation ----
+  function resetRun(){
+    heat = 45; prog = 0; timingX = 0; timingDir = 1;
+    combo = 0; maxCombo = 0; score = 0;
+    cracks = 0; perfect = 0; good = 0; bad = 0;
+    lastHitText = ""; forged = false; failed = false;
+  }
+  function goMenu(){ page = 0; drawMenu(); }
+  function goWorkshop(){ page = 2; drawWorkshop(); }
+  function goLoading(){ page = 1; loadingEnd = Date.now() + 600; drawLoading(); }
+  function goGame(){ page = 3; resetRun(); drawGame(); }
+
+  // ---- judging ----
+  function timingJudge(){
+    if(timingX >= 0.52 && timingX <= 0.56) return "PERFECT";
+    if(timingX >= 0.46 && timingX <= 0.62) return "GOOD";
+    return "BAD";
+  }
+  function heatOk(){
+    return (heat >= recipe.targetLow && heat <= recipe.targetHigh);
+  }
+
+  // ---- strike ----
+  function doStrike(){
+    if(page !== 3) return;
+    if(forged || failed) return;
+
+    const tj = timingJudge();
+    const okHeat = heatOk();
+
+    if(tj === "PERFECT") perfect++;
+    else if(tj === "GOOD") good++;
+    else bad++;
+
+    if(tj !== "BAD" && okHeat){
+      combo++;
+      if(combo > maxCombo) maxCombo = combo;
+    }else{
+      combo = 0;
+    }
+
+    let gain = recipe.baseGain;
+    if(tj === "PERFECT") gain = Math.floor(gain * 1.6);
+    if(tj === "GOOD")    gain = Math.floor(gain * 1.15);
+    if(tj === "BAD")     gain = Math.floor(gain * 0.7);
+
+    if(!okHeat) gain = Math.floor(gain * 0.5);
+
+    gain = Math.floor(gain * (1 + upHammer * 0.08)); // hammer upgrade
+
+    prog += gain;
+    if(prog > 100) prog = 100;
+
+    let baseScore = 10;
+    if(tj === "PERFECT") baseScore = 25;
+    if(tj === "GOOD")    baseScore = 15;
+    if(tj === "BAD")     baseScore = 6;
+
+    if(!okHeat) baseScore = Math.floor(baseScore * 0.6);
+
+    let mult = 1 + combo * 0.05;
+    score += Math.floor(baseScore * mult);
+
+    heat += recipe.heatRise;
+    if(heat > 100) heat = 100;
+
+    lastHitText = tj;
+
+    if(prog >= 100){
+      forged = true;
+      finishRun();
+      return;
+    }
+
+    drawGame();
+  }
+
+  // ---- quench ----
+  function doQuench(){
+    if(page !== 3) return;
+    if(forged || failed) return;
+
+    let drop = 28 + upQuench * 6;
+    heat -= drop;
+    if(heat < 0) heat = 0;
+
+    let preHeat = heat + drop;
+
+    let crackChance = 0;
+    if(preHeat > 92) crackChance = 0.35;
+    else if(preHeat > 85) crackChance = 0.22;
+    else crackChance = 0.06;
+
+    crackChance = crackChance - upQuench * 0.04;
+    if(crackChance < 0.02) crackChance = 0.02;
+
+    if(Math.random() < crackChance){
+      cracks++;
+      combo = 0;
+      lastHitText = "CRACK";
+      if(cracks >= 3){
+        failed = true;
+        finishRun();
+        return;
+      }
+    }else{
+      lastHitText = "QUENCH";
+    }
+
+    drawGame();
+  }
+
+  // ---- grading ----
+  function calcGrade(){
+    if(failed) return "F";
+
+    const totalHits = perfect + good + bad;
+    const perfectRate = (totalHits === 0) ? 0 : (perfect / totalHits);
+
+    let s = score - cracks * 120;
+    if(s < 0) s = 0;
+
+    if(cracks === 0 && perfectRate >= 0.55 && maxCombo >= 12 && s >= 1400) return "S";
+    if(cracks <= 1 && perfectRate >= 0.35 && maxCombo >= 8  && s >= 900)  return "A";
+    if(cracks <= 2 && perfectRate >= 0.18 && s >= 500) return "B";
+    return "C";
+  }
+
+  function finishRun(){
+    const grade = calcGrade();
+
+    let coinEarned = recipe.coinBase;
+    coinEarned += Math.floor(score / 120);
+    coinEarned -= cracks * 6;
+
+    if(grade === "S") coinEarned += 18;
+    if(grade === "A") coinEarned += 10;
+    if(grade === "B") coinEarned += 4;
+    if(grade === "F") coinEarned = 2;
+
+    if(coinEarned < 0) coinEarned = 0;
+    coins += coinEarned;
+
+    page = 4;
+    drawResults(grade, coinEarned);
+  }
+
+  // ---- input routing ----
+  function pressA(){
+    if(page === 0){ goLoading(); return; }
+    if(page === 2){ goLoading(); return; }
+    if(page === 4){ goWorkshop(); return; }
+    if(page === 3){ doStrike(); return; }
+  }
+  function pressB(){
+    if(page === 3){ goWorkshop(); return; }
+    if(page === 2){ goMenu(); return; }
+    if(page === 4){ goMenu(); return; }
+  }
+  function pressQ(){
+    if(page === 3){ doQuench(); }
+  }
+  function pickRecipe(id){
+    recipe = recipes[id];
+    if(page === 2) drawWorkshop();
+  }
+
+  // ---- buttons ----
+  document.getElementById("btnA").onclick = pressA;
+  document.getElementById("btnB").onclick = pressB;
+  document.getElementById("btnQ").onclick = pressQ;
+  document.getElementById("btnR").onclick = () => { coins=0; upHammer=0; upFurnace=0; upQuench=0; goMenu(); };
+
+  // ---- keyboard ----
+  window.addEventListener("keydown", (e) => {
+    if(e.key === "a" || e.key === "A" || e.code === "Space") pressA();
+    if(e.key === "b" || e.key === "B") pressB();
+    if(e.key === "q" || e.key === "Q") pressQ();
+
+    if(e.key === "1") pickRecipe(0);
+    if(e.key === "2") pickRecipe(1);
+    if(e.key === "3") pickRecipe(2);
+
+    if(page === 2){
+      if(e.key === "z" || e.key === "Z"){ buyHammer(); drawWorkshop(); }
+      if(e.key === "x" || e.key === "X"){ buyFurnace(); drawWorkshop(); }
+      if(e.key === "c" || e.key === "C"){ buyQuench(); drawWorkshop(); }
+    }
+  });
+
+  // ---- loop ----
+  function tick(){
+    const now = Date.now();
+
+    if(page === 1 && now >= loadingEnd){
+      goGame();
+    }
+
+    if(page === 3){
+      let sp = recipe.timingSpeed;
+
+      sp = sp * (1 - upFurnace * 0.03);
+      if(sp < 0.012) sp = 0.012;
+
+      timingX += sp * timingDir;
+      if(timingX > 1){ timingX = 1; timingDir = -1; }
+      if(timingX < 0){ timingX = 0; timingDir = 1; }
+
+      let furnaceTarget = 70 + upFurnace * 4;
+      if(furnaceTarget > 92) furnaceTarget = 92;
+
+      let diff = furnaceTarget - heat;
+      heat += diff * 0.004;
+
+      heat -= 0.06;
+
+      if(heat < 0) heat = 0;
+      if(heat > 100) heat = 100;
+
+      drawGame();
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  // start
+  goMenu();
+  requestAnimationFrame(tick);
+</script>
+</body>
+</html>
